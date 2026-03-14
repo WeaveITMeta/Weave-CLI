@@ -3,7 +3,8 @@
 // =============================================================================
 //
 // Table of Contents:
-// - prune_template: Main entry point — copy template and remove unneeded parts
+// - prune_template: Main entry point — smart-copy template, skipping unneeded content
+// - copy_filtered: Recursive copy that skips excluded directories at copy time
 // - resolve_keep_paths: Expand glob patterns into concrete directory paths
 // - always_keep: Directories and files that are always preserved
 // - should_prune: Check if a given path should be removed
@@ -40,6 +41,25 @@ const PRUNABLE_ROOTS: &[&str] = &[
     "supabase",
 ];
 
+/// Directories that are NEVER copied from the template source.
+/// These are build artifacts, dependency caches, and VCS metadata
+/// that should never appear in a scaffolded project.
+const SKIP_DIRECTORIES: &[&str] = &[
+    "node_modules",
+    ".git",
+    ".turbo",
+    ".next",
+    ".nuxt",
+    ".expo",
+    "dist",
+    "build",
+    ".cache",
+    ".pnpm-store",
+    "__pycache__",
+    "target",
+    ".VSCodeCounter",
+];
+
 /// Copy the template source to the project destination, then prune
 /// directories that were not selected by the user.
 pub fn prune_template(
@@ -50,18 +70,9 @@ pub fn prune_template(
     // Step 1: Resolve glob patterns in keep_paths to concrete paths
     let resolved_keeps = resolve_keep_paths(source, keep_paths)?;
 
-    // Step 2: Copy the entire template to the destination
+    // Step 2: Copy the template to the destination, skipping excluded directories
     tracing::info!("Copying template to {}", destination.display());
-
-    let copy_options = fs_extra::dir::CopyOptions {
-        overwrite: true,
-        skip_exist: false,
-        copy_inside: true,
-        content_only: true,
-        ..Default::default()
-    };
-
-    fs_extra::dir::copy(source, destination, &copy_options)
+    copy_filtered(source, destination)
         .context("Failed to copy template to project directory")?;
 
     // Step 3: Walk the destination and remove directories that should be pruned
@@ -70,6 +81,51 @@ pub fn prune_template(
 
     // Step 4: Clean up empty directories left after pruning
     remove_empty_dirs(destination)?;
+
+    Ok(())
+}
+
+/// Recursively copy a directory tree, skipping directories in SKIP_DIRECTORIES.
+/// This avoids copying node_modules, .git, and other large/problematic directories
+/// that would cause Windows MAX_PATH errors and waste time.
+fn copy_filtered(source: &Path, destination: &Path) -> Result<()> {
+    if !destination.exists() {
+        std::fs::create_dir_all(destination)
+            .with_context(|| format!("Failed to create directory: {}", destination.display()))?;
+    }
+
+    let entries = std::fs::read_dir(source)
+        .with_context(|| format!("Failed to read source directory: {}", source.display()))?;
+
+    for entry in entries {
+        let entry = entry.context("Failed to read directory entry")?;
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+
+        let source_path = entry.path();
+        let destination_path = destination.join(&file_name);
+
+        if source_path.is_dir() {
+            // Skip excluded directories entirely
+            if SKIP_DIRECTORIES.iter().any(|skip| file_name_str == *skip) {
+                tracing::debug!("Skipping excluded directory: {}", file_name_str);
+                continue;
+            }
+
+            // Recurse into the directory
+            copy_filtered(&source_path, &destination_path)?;
+        } else {
+            // Copy the file
+            std::fs::copy(&source_path, &destination_path)
+                .with_context(|| {
+                    format!(
+                        "Failed to copy file: {} -> {}",
+                        source_path.display(),
+                        destination_path.display()
+                    )
+                })?;
+        }
+    }
 
     Ok(())
 }
