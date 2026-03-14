@@ -17,7 +17,7 @@ One command. Every layer. Production-ready.
 
 [![Crates.io](https://img.shields.io/crates/v/weave-init.svg)](https://crates.io/crates/weave-init)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/WeaveITMeta/Weave-CLI/actions/workflows/ci.yml/badge.svg)](https://github.com/WeaveITMeta/Weave-CLI/actions/workflows/ci.yml)
+[![CI](https://github.com/WeaveITMeta/weave-init/actions/workflows/ci.yml/badge.svg)](https://github.com/WeaveITMeta/weave-init/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/built_with-Rust-dea584.svg)](https://www.rust-lang.org/)
 
 [Installation](#installation) · [Quick Start](#quick-start) · [Decision Tree](#the-decision-tree) · [Why Weave?](#why-weave) · [Architecture](#architecture)
@@ -95,7 +95,7 @@ cargo install weave-init
 
 ### Prebuilt Binaries
 
-Download the latest binary for your platform from [GitHub Releases](https://github.com/WeaveITMeta/Weave-CLI/releases):
+Download the latest binary for your platform from [GitHub Releases](https://github.com/WeaveITMeta/weave-init/releases):
 
 | Platform | Target | Download |
 |---|---|---|
@@ -106,8 +106,8 @@ Download the latest binary for your platform from [GitHub Releases](https://gith
 ### From Source
 
 ```bash
-git clone https://github.com/WeaveITMeta/Weave-CLI.git
-cd Weave-CLI
+git clone https://github.com/WeaveITMeta/weave-init.git
+cd weave-init
 cargo install --path .
 ```
 
@@ -323,7 +323,7 @@ Every push to `main` runs formatting (`rustfmt`), linting (`clippy`), and cross-
 
 ## Contributing
 
-Contributions are welcome. Please open an issue or pull request on [GitHub](https://github.com/WeaveITMeta/Weave-CLI).
+Contributions are welcome. Please open an issue or pull request on [GitHub](https://github.com/WeaveITMeta/weave-init).
 
 ## License
 
