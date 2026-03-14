@@ -399,8 +399,8 @@ fn run_bun_install(project_dir: &std::path::Path) -> bool {
         }
     };
 
-    // Wait up to 10 minutes for bun install to complete
-    let timeout = std::time::Duration::from_secs(600);
+    // Wait up to 45 minutes for bun install to complete
+    let timeout = std::time::Duration::from_secs(2700);
     let start = std::time::Instant::now();
 
     loop {
@@ -420,7 +420,7 @@ fn run_bun_install(project_dir: &std::path::Path) -> bool {
             Ok(None) => {
                 // Still running — check timeout
                 if start.elapsed() > timeout {
-                    eprintln!("  Warning: bun install timed out after 10 minutes. Killing process.");
+                    eprintln!("  Warning: bun install timed out after 45 minutes. Killing process.");
                     let _ = child.kill();
                     let _ = child.wait();
                     eprintln!("  Run `bun install` manually to complete setup.");
