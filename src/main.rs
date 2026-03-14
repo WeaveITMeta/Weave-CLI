@@ -263,7 +263,7 @@ fn run_scaffold(
     manifest: &core::manifest::WeaveManifest,
     selections: &core::selections::UserSelections,
     skip_install: bool,
-    _skip_git: bool,
+    skip_git: bool,
 ) -> Result<()> {
     // Step 1: Create project directory
     println!("Creating project directory...");
@@ -283,7 +283,7 @@ fn run_scaffold(
 
     // Step 4: Generate configuration files (package.json, .env, bunfig.toml, etc.)
     println!("Generating configuration files...");
-    generator::post_scaffold(project_dir, manifest, selections)?;
+    generator::post_scaffold(project_dir, manifest, selections, skip_git)?;
 
     // Step 5: Run bun install (unless skipped)
     if !skip_install {

@@ -15,6 +15,7 @@
 use crate::core::manifest::WeaveManifest;
 use crate::core::selections::UserSelections;
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Orchestrate the full scaffolding process after template is copied and pruned.
@@ -23,6 +24,7 @@ pub fn post_scaffold(
     project_dir: &Path,
     manifest: &WeaveManifest,
     selections: &UserSelections,
+    skip_git: bool,
 ) -> Result<()> {
     // Step 1: Save user selections as weave.toml
     generate_weave_toml(project_dir, selections)?;
@@ -36,11 +38,16 @@ pub fn post_scaffold(
     // Step 4: Generate .env file with required environment variables
     generate_env_file(project_dir, manifest, selections)?;
 
-    // Step 5: Clean up pnpm-specific files
-    cleanup_pnpm_artifacts(project_dir)?;
+    // Step 5: Filter docker-compose.yml to only include selected services
+    filter_docker_compose(project_dir, manifest, selections)?;
 
-    // Step 6: Initialize git repository
-    initialize_git(project_dir)?;
+    // Step 6: Clean up files that are not needed in the scaffolded project
+    cleanup_artifacts(project_dir)?;
+
+    // Step 7: Initialize git repository (unless skipped)
+    if !skip_git {
+        initialize_git(project_dir)?;
+    }
 
     Ok(())
 }
@@ -194,16 +201,95 @@ fn generate_env_file(
     Ok(())
 }
 
-/// Remove pnpm-specific files that are no longer needed with bun
-fn cleanup_pnpm_artifacts(project_dir: &Path) -> Result<()> {
-    let pnpm_files = [
+/// Filter docker-compose.yml to only include services the user selected.
+/// Removes services that aren't needed based on the manifest's docker_services.
+fn filter_docker_compose(
+    project_dir: &Path,
+    manifest: &WeaveManifest,
+    selections: &UserSelections,
+) -> Result<()> {
+    let compose_path = project_dir.join("docker-compose.yml");
+
+    if !compose_path.exists() {
+        return Ok(());
+    }
+
+    let selected_services = manifest.collect_docker_services(&selections.selections);
+
+    if selected_services.is_empty() {
+        // No Docker services selected — remove docker-compose.yml entirely
+        std::fs::remove_file(&compose_path)
+            .context("Failed to remove docker-compose.yml")?;
+        tracing::info!("Removed docker-compose.yml (no Docker services selected)");
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&compose_path)
+        .context("Failed to read docker-compose.yml")?;
+
+    let mut compose: serde_json::Value = serde_yaml::from_str(&content)
+        .context("Failed to parse docker-compose.yml")?;
+
+    // Filter the services map to only include selected services
+    if let Some(services) = compose.get_mut("services").and_then(|s| s.as_object_mut()) {
+        let all_keys: Vec<String> = services.keys().cloned().collect();
+        for key in all_keys {
+            if !selected_services.contains(&key) {
+                services.remove(&key);
+                tracing::debug!("Removed Docker service: {}", key);
+            }
+        }
+    }
+
+    // Filter volumes to only keep volumes referenced by remaining services
+    if let Some(services) = compose.get("services").and_then(|s| s.as_object()) {
+        let used_volumes: HashSet<String> = services
+            .values()
+            .filter_map(|svc| svc.get("volumes"))
+            .filter_map(|v| v.as_array())
+            .flat_map(|arr| arr.iter())
+            .filter_map(|v| v.as_str())
+            .filter_map(|s| s.split(':').next())
+            .filter(|s| !s.starts_with('.') && !s.starts_with('/')) // Only named volumes
+            .map(|s| s.to_string())
+            .collect();
+
+        if let Some(volumes) = compose.get_mut("volumes").and_then(|v| v.as_object_mut()) {
+            let all_vol_keys: Vec<String> = volumes.keys().cloned().collect();
+            for key in all_vol_keys {
+                if !used_volumes.contains(&key) {
+                    volumes.remove(&key);
+                }
+            }
+        }
+    }
+
+    // Write back as YAML
+    let updated = serde_yaml::to_string(&compose)
+        .context("Failed to serialize docker-compose.yml")?;
+    std::fs::write(&compose_path, updated)
+        .context("Failed to write docker-compose.yml")?;
+
+    tracing::info!(
+        "Filtered docker-compose.yml to {} services",
+        selected_services.len()
+    );
+    Ok(())
+}
+
+/// Remove files that should not be in the scaffolded project
+fn cleanup_artifacts(project_dir: &Path) -> Result<()> {
+    let remove_files = [
+        // pnpm artifacts (project uses bun)
         "pnpm-workspace.yaml",
         "pnpm-lock.yaml",
         ".pnpmrc",
         ".npmrc",
+        // CLI-internal manifest (not useful in the scaffolded project)
+        "weave.manifest.toml",
     ];
 
-    for file in &pnpm_files {
+    for file in &remove_files {
         let path = project_dir.join(file);
         if path.exists() {
             std::fs::remove_file(&path)
@@ -212,7 +298,7 @@ fn cleanup_pnpm_artifacts(project_dir: &Path) -> Result<()> {
         }
     }
 
-    tracing::info!("Cleaned up pnpm artifacts");
+    tracing::info!("Cleaned up artifacts");
     Ok(())
 }
 

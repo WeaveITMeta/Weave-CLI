@@ -24,11 +24,8 @@ const ALWAYS_KEEP: &[&str] = &[
     "README.md",
     "LICENSE",
     "docker-compose.yml",
-    "weave.manifest.toml",
-    "weave.toml",
     "bun.lockb",
     "bunfig.toml",
-    "pnpm-workspace.yaml",
 ];
 
 /// Top-level directories that are prunable (contain selectable content).
@@ -150,20 +147,8 @@ fn selective_copy(
                 selective_copy(source_root, destination_root, &source_path, keeps)?;
             }
         } else {
-            // Files: copy if parent directory passed the filter (we're already inside it)
-            // Root-level files: always copy if in ALWAYS_KEEP, or if not inside a prunable root
-            if current_source == source_root {
-                // Root-level file — only copy if it's in ALWAYS_KEEP or not filterable
-                let is_kept = ALWAYS_KEEP.iter().any(|keep| file_name_str == *keep);
-                let is_prunable_file = PRUNABLE_ROOTS
-                    .iter()
-                    .any(|root| file_name_str == *root);
-
-                if !is_kept && is_prunable_file {
-                    continue;
-                }
-            }
-
+            // Copy files. Root-level files are always copied (package.json, tsconfig, etc.).
+            // Files inside directories are copied if we recursed into the directory (already filtered).
             let dest_file = destination_dir.join(&file_name);
             std::fs::copy(&source_path, &dest_file).with_context(|| {
                 format!(

@@ -69,6 +69,7 @@ glob = "0.3"
 
 # Color support
 unicode-width = "0.2"
+serde_yaml = "0.9.34"
 
 [profile.release]
 opt-level = 3
