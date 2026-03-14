@@ -15,7 +15,7 @@
 
 One command. Every layer. Production-ready.
 
-[![Crates.io](https://img.shields.io/crates/v/weave-cli.svg)](https://crates.io/crates/weave-cli)
+[![Crates.io](https://img.shields.io/crates/v/weave-init.svg)](https://crates.io/crates/weave-init)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/WeaveITMeta/Weave-CLI/actions/workflows/ci.yml/badge.svg)](https://github.com/WeaveITMeta/Weave-CLI/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/built_with-Rust-dea584.svg)](https://www.rust-lang.org/)
@@ -29,7 +29,7 @@ One command. Every layer. Production-ready.
 Weave CLI scaffolds **production-ready monorepo projects** through a beautiful [Ratatui](https://ratatui.rs/) terminal wizard. Choose your platform paradigm, backend language, authentication provider, database, cloud infrastructure, microservices, and DevOps tooling — get a complete project with matching Terraform, Docker, CI/CD pipelines, and shared packages. All from a single binary that runs offline.
 
 ```bash
-cargo install weave-cli
+cargo install weave-init
 weave init my-project
 ```
 
@@ -90,7 +90,7 @@ Every combination generates a **tailored monorepo** — only the code, configs, 
 ### From crates.io (recommended)
 
 ```bash
-cargo install weave-cli
+cargo install weave-init
 ```
 
 ### Prebuilt Binaries
