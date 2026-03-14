@@ -1,6 +1,6 @@
 [package]
 name = "weave-init"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["WeaveITMeta"]
 description = "A full-stack project scaffolding CLI with an interactive terminal UI. Choose your platform, backend language, auth provider, database, cloud infrastructure, and microservices — get a production-ready monorepo."
