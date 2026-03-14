@@ -1,36 +1,39 @@
 // =============================================================================
-// Pruner - Remove unneeded directories and files based on user selections
+// Pruner - Copy only selected content from template to project directory
 // =============================================================================
 //
 // Table of Contents:
-// - prune_template: Main entry point — smart-copy template, skipping unneeded content
-// - copy_filtered: Recursive copy that skips excluded directories at copy time
+// - prune_template: Main entry point — selective copy based on user choices
+// - selective_copy: Recursive copy that only copies kept paths (never copies junk)
 // - resolve_keep_paths: Expand glob patterns into concrete directory paths
-// - always_keep: Directories and files that are always preserved
-// - should_prune: Check if a given path should be removed
+// - is_path_selected: Check whether a relative path should be included
 // =============================================================================
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::Duration;
 
 /// Directories and files that are ALWAYS kept regardless of selections.
 /// These are root-level configuration and documentation files.
 const ALWAYS_KEEP: &[&str] = &[
     ".gitignore",
     ".env.example",
+    ".env",
     "package.json",
     "tsconfig.json",
     "README.md",
     "LICENSE",
+    "docker-compose.yml",
     "weave.manifest.toml",
     "weave.toml",
+    "bun.lockb",
+    "bunfig.toml",
+    "pnpm-workspace.yaml",
 ];
 
 /// Top-level directories that are prunable (contain selectable content).
-/// If a directory is not in this list, it is always kept.
+/// Only directories inside these roots are subject to keep-path filtering.
+/// Everything outside these roots is always copied (e.g., .github, docs, scripts).
 const PRUNABLE_ROOTS: &[&str] = &[
     "apps",
     "packages",
@@ -42,8 +45,7 @@ const PRUNABLE_ROOTS: &[&str] = &[
 ];
 
 /// Directories that are NEVER copied from the template source.
-/// These are build artifacts, dependency caches, and VCS metadata
-/// that should never appear in a scaffolded project.
+/// Build artifacts, dependency caches, and VCS metadata.
 const SKIP_DIRECTORIES: &[&str] = &[
     "node_modules",
     ".git",
@@ -60,134 +62,130 @@ const SKIP_DIRECTORIES: &[&str] = &[
     ".VSCodeCounter",
 ];
 
-/// Copy the template source to the project destination, then prune
-/// directories that were not selected by the user.
+/// Selectively copy the template to the destination.
+/// Only copies files that match the user's selections — never copies
+/// anything that would be immediately pruned. This is a single-pass
+/// operation: no copy-then-delete cycle needed.
 pub fn prune_template(
     source: &Path,
     destination: &Path,
     keep_paths: &[String],
 ) -> Result<()> {
-    // Step 1: Resolve glob patterns in keep_paths to concrete paths
+    // Resolve glob patterns in keep_paths to concrete relative paths
     let resolved_keeps = resolve_keep_paths(source, keep_paths)?;
 
-    // Step 2: Copy the template to the destination, skipping excluded directories
-    tracing::info!("Copying template to {}", destination.display());
-    copy_filtered(source, destination)
+    tracing::info!(
+        "Selective copy: {} keep paths resolved",
+        resolved_keeps.len()
+    );
+    for keep in &resolved_keeps {
+        tracing::debug!("  keep: {}", keep.display());
+    }
+
+    // Single-pass selective copy
+    selective_copy(source, destination, source, &resolved_keeps)
         .context("Failed to copy template to project directory")?;
-
-    // Step 3: Walk the destination and remove directories that should be pruned
-    tracing::info!("Pruning unselected directories...");
-    prune_directory(destination, destination, &resolved_keeps)?;
-
-    // Step 4: Clean up empty directories left after pruning
-    remove_empty_dirs(destination)?;
 
     Ok(())
 }
 
-/// Recursively copy a directory tree, skipping directories in SKIP_DIRECTORIES.
-/// This avoids copying node_modules, .git, and other large/problematic directories
-/// that would cause Windows MAX_PATH errors and waste time.
-fn copy_filtered(source: &Path, destination: &Path) -> Result<()> {
-    if !destination.exists() {
-        std::fs::create_dir_all(destination)
-            .with_context(|| format!("Failed to create directory: {}", destination.display()))?;
+/// Recursively copy a directory tree, applying three filters:
+/// 1. SKIP_DIRECTORIES — never copy node_modules, .git, etc.
+/// 2. PRUNABLE_ROOTS — directories inside these roots must match a keep path
+/// 3. Everything outside prunable roots is always copied
+fn selective_copy(
+    source_root: &Path,
+    destination_root: &Path,
+    current_source: &Path,
+    keeps: &HashSet<PathBuf>,
+) -> Result<()> {
+    let destination_dir = if current_source == source_root {
+        destination_root.to_path_buf()
+    } else {
+        let relative = current_source.strip_prefix(source_root).unwrap();
+        destination_root.join(relative)
+    };
+
+    if !destination_dir.exists() {
+        std::fs::create_dir_all(&destination_dir)
+            .with_context(|| format!("Failed to create directory: {}", destination_dir.display()))?;
     }
 
-    let entries = std::fs::read_dir(source)
-        .with_context(|| format!("Failed to read source directory: {}", source.display()))?;
+    let entries = std::fs::read_dir(current_source)
+        .with_context(|| format!("Failed to read directory: {}", current_source.display()))?;
 
     for entry in entries {
         let entry = entry.context("Failed to read directory entry")?;
         let file_name = entry.file_name();
         let file_name_str = file_name.to_string_lossy();
-
         let source_path = entry.path();
-        let destination_path = destination.join(&file_name);
+
+        // Compute the relative path from the template root (forward-slash normalized)
+        let relative = source_path
+            .strip_prefix(source_root)
+            .unwrap_or(&source_path);
+        let relative_str = relative.to_string_lossy().replace('\\', "/");
 
         if source_path.is_dir() {
-            // Skip excluded directories entirely
+            // Filter 1: Skip build artifacts and dependency caches
             if SKIP_DIRECTORIES.iter().any(|skip| file_name_str == *skip) {
-                tracing::debug!("Skipping excluded directory: {}", file_name_str);
+                tracing::debug!("Skipping excluded: {}", relative_str);
                 continue;
             }
 
-            // Recurse into the directory
-            copy_filtered(&source_path, &destination_path)?;
+            // Filter 2: Check if this directory is inside a prunable root
+            let in_prunable_root = PRUNABLE_ROOTS
+                .iter()
+                .any(|root| relative_str.starts_with(root));
+
+            if in_prunable_root {
+                // Only copy if this directory is selected (or is an ancestor/descendant of a selected path)
+                if is_path_selected(&relative_str, keeps) {
+                    selective_copy(source_root, destination_root, &source_path, keeps)?;
+                } else {
+                    tracing::debug!("Skipping unselected: {}", relative_str);
+                }
+            } else {
+                // Outside prunable roots — always copy
+                selective_copy(source_root, destination_root, &source_path, keeps)?;
+            }
         } else {
-            // Copy the file
-            std::fs::copy(&source_path, &destination_path)
-                .with_context(|| {
-                    format!(
-                        "Failed to copy file: {} -> {}",
-                        source_path.display(),
-                        destination_path.display()
-                    )
-                })?;
+            // Files: copy if parent directory passed the filter (we're already inside it)
+            // Root-level files: always copy if in ALWAYS_KEEP, or if not inside a prunable root
+            if current_source == source_root {
+                // Root-level file — only copy if it's in ALWAYS_KEEP or not filterable
+                let is_kept = ALWAYS_KEEP.iter().any(|keep| file_name_str == *keep);
+                let is_prunable_file = PRUNABLE_ROOTS
+                    .iter()
+                    .any(|root| file_name_str == *root);
+
+                if !is_kept && is_prunable_file {
+                    continue;
+                }
+            }
+
+            let dest_file = destination_dir.join(&file_name);
+            std::fs::copy(&source_path, &dest_file).with_context(|| {
+                format!(
+                    "Failed to copy: {} -> {}",
+                    source_path.display(),
+                    dest_file.display()
+                )
+            })?;
         }
     }
 
     Ok(())
 }
 
-/// Recursively prune directories that are not in the keep set
-fn prune_directory(
-    root: &Path,
-    current: &Path,
-    keeps: &HashSet<PathBuf>,
-) -> Result<()> {
-    if !current.is_dir() {
-        return Ok(());
-    }
-
-    let entries: Vec<_> = std::fs::read_dir(current)
-        .context("Failed to read directory during pruning")?
-        .filter_map(|e| e.ok())
-        .collect();
-
-    for entry in entries {
-        let path = entry.path();
-        let relative = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-
-        // Skip always-keep files
-        if ALWAYS_KEEP.iter().any(|keep| relative == *keep) {
-            continue;
-        }
-
-        // Check if this is inside a prunable root
-        let is_prunable = PRUNABLE_ROOTS
-            .iter()
-            .any(|prunable_root| relative.starts_with(prunable_root));
-
-        if !is_prunable {
-            continue;
-        }
-
-        if path.is_dir() {
-            // Check if this directory or any of its descendants are in the keep set
-            let should_keep = keeps.iter().any(|keep| {
-                let keep_str = keep.to_string_lossy().replace('\\', "/");
-                // Keep if the directory IS a kept path, or is an ancestor/descendant of one
-                keep_str.starts_with(relative.as_str()) || relative.starts_with(keep_str.as_str())
-            });
-
-            if should_keep {
-                // Recurse deeper — some subdirectories may still need pruning
-                prune_directory(root, &path, keeps)?;
-            } else {
-                // This entire directory tree should be removed
-                tracing::debug!("Pruning: {}", relative);
-                retry_remove_dir_all(&path)
-                    .with_context(|| format!("Failed to remove directory: {}", path.display()))?;
-            }
-        }
-    }
-
-    Ok(())
+/// Check if a relative path matches any keep path.
+/// Returns true if the path IS a keep path, is an ancestor of one, or is a descendant of one.
+fn is_path_selected(relative: &str, keeps: &HashSet<PathBuf>) -> bool {
+    keeps.iter().any(|keep| {
+        let keep_str = keep.to_string_lossy().replace('\\', "/");
+        // Path is a kept directory, or is an ancestor of a kept path, or is inside a kept path
+        keep_str.starts_with(relative) || relative.starts_with(keep_str.as_str())
+    })
 }
 
 /// Resolve glob patterns in keep paths to concrete relative paths
@@ -195,7 +193,7 @@ fn resolve_keep_paths(source: &Path, keep_paths: &[String]) -> Result<HashSet<Pa
     let mut resolved = HashSet::new();
 
     for pattern in keep_paths {
-        // Replace forward slashes for cross-platform compatibility
+        // Normalize forward slashes for cross-platform compatibility
         let normalized = pattern.replace('\\', "/");
 
         if normalized.contains('*') {
@@ -215,84 +213,4 @@ fn resolve_keep_paths(source: &Path, keep_paths: &[String]) -> Result<HashSet<Pa
     }
 
     Ok(resolved)
-}
-
-/// Recursively remove empty directories
-fn remove_empty_dirs(path: &Path) -> Result<bool> {
-    if !path.is_dir() {
-        return Ok(false);
-    }
-
-    let entries: Vec<_> = std::fs::read_dir(path)?
-        .filter_map(|e| e.ok())
-        .collect();
-
-    for entry in &entries {
-        let child_path = entry.path();
-        if child_path.is_dir() {
-            remove_empty_dirs(&child_path)?;
-        }
-    }
-
-    // Re-check if directory is now empty
-    let remaining: Vec<_> = std::fs::read_dir(path)?
-        .filter_map(|e| e.ok())
-        .collect();
-
-    if remaining.is_empty() {
-        retry_remove_dir(path)?;
-        return Ok(true);
-    }
-
-    Ok(false)
-}
-
-/// Retry removing a directory tree, handling Windows file-locking (os error 32).
-/// Antivirus, search indexers, and file explorers can briefly hold handles on
-/// newly-written files, causing remove_dir_all to fail on the first attempt.
-fn retry_remove_dir_all(path: &Path) -> std::io::Result<()> {
-    const MAX_RETRIES: u32 = 5;
-    const RETRY_DELAY: Duration = Duration::from_millis(100);
-
-    for attempt in 0..MAX_RETRIES {
-        match std::fs::remove_dir_all(path) {
-            Ok(()) => return Ok(()),
-            Err(err) if attempt < MAX_RETRIES - 1 => {
-                tracing::debug!(
-                    "Retry {}/{} removing {}: {}",
-                    attempt + 1,
-                    MAX_RETRIES,
-                    path.display(),
-                    err
-                );
-                thread::sleep(RETRY_DELAY);
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    Ok(())
-}
-
-/// Retry removing a single empty directory with the same backoff strategy
-fn retry_remove_dir(path: &Path) -> std::io::Result<()> {
-    const MAX_RETRIES: u32 = 5;
-    const RETRY_DELAY: Duration = Duration::from_millis(100);
-
-    for attempt in 0..MAX_RETRIES {
-        match std::fs::remove_dir(path) {
-            Ok(()) => return Ok(()),
-            Err(err) if attempt < MAX_RETRIES - 1 => {
-                tracing::debug!(
-                    "Retry {}/{} removing empty dir {}: {}",
-                    attempt + 1,
-                    MAX_RETRIES,
-                    path.display(),
-                    err
-                );
-                thread::sleep(RETRY_DELAY);
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    Ok(())
 }
