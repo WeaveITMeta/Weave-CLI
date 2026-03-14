@@ -12,6 +12,8 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 /// Directories and files that are ALWAYS kept regardless of selections.
 /// These are root-level configuration and documentation files.
@@ -123,7 +125,7 @@ fn prune_directory(
             } else {
                 // This entire directory tree should be removed
                 tracing::debug!("Pruning: {}", relative);
-                std::fs::remove_dir_all(&path)
+                retry_remove_dir_all(&path)
                     .with_context(|| format!("Failed to remove directory: {}", path.display()))?;
             }
         }
@@ -182,9 +184,59 @@ fn remove_empty_dirs(path: &Path) -> Result<bool> {
         .collect();
 
     if remaining.is_empty() {
-        std::fs::remove_dir(path)?;
+        retry_remove_dir(path)?;
         return Ok(true);
     }
 
     Ok(false)
+}
+
+/// Retry removing a directory tree, handling Windows file-locking (os error 32).
+/// Antivirus, search indexers, and file explorers can briefly hold handles on
+/// newly-written files, causing remove_dir_all to fail on the first attempt.
+fn retry_remove_dir_all(path: &Path) -> std::io::Result<()> {
+    const MAX_RETRIES: u32 = 5;
+    const RETRY_DELAY: Duration = Duration::from_millis(100);
+
+    for attempt in 0..MAX_RETRIES {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < MAX_RETRIES - 1 => {
+                tracing::debug!(
+                    "Retry {}/{} removing {}: {}",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    path.display(),
+                    err
+                );
+                thread::sleep(RETRY_DELAY);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+/// Retry removing a single empty directory with the same backoff strategy
+fn retry_remove_dir(path: &Path) -> std::io::Result<()> {
+    const MAX_RETRIES: u32 = 5;
+    const RETRY_DELAY: Duration = Duration::from_millis(100);
+
+    for attempt in 0..MAX_RETRIES {
+        match std::fs::remove_dir(path) {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < MAX_RETRIES - 1 => {
+                tracing::debug!(
+                    "Retry {}/{} removing empty dir {}: {}",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    path.display(),
+                    err
+                );
+                thread::sleep(RETRY_DELAY);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
